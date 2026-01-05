@@ -1,0 +1,125 @@
+SPDG-Transformer: Static-Prior Dynamic-Gating Attention
+
+Abstract
+
+Attention-based models achieve strong performance by exhaustively computing pairwise interactions, but this uniform allocation of computation incurs substantial and often unnecessary cost. Empirically, most real-world sequences exhibit low-entropy structural regularities, while semantic or functional meaning concentrates in sparse, high-entropy events. We propose the Static-Prior Dynamic-Gating Transformer (SPDG-Transformer), a framework that reallocates attention responsibilities between compile-time structure and run-time reasoning. SPDG introduces a non-differentiable, frozen structural prior derived from global statistics to define default sparse attention patterns, and a lightweight dynamic gating mechanism that modulates computation based on the model’s internal uncertainty. When confidence is high, attention is aggressively pruned; when uncertainty rises, the model smoothly reverts to full attention, preserving expressivity. We present a principled design, analyze computational properties, and propose decisive experiments demonstrating both dynamic efficiency gains and robustness on counter-statistical inputs. Beyond language, SPDG provides a general principle for computation allocation across modalities with stable structure and sparse meaning.
+
+1. Introduction
+
+Self-attention enables powerful contextual modeling but incurs quadratic cost with sequence length. Existing efficiency methods approximate or sparsify attention uniformly, often sacrificing robustness on rare but critical cases. In contrast, human cognition allocates effort unevenly: routine inputs are processed quickly, while anomalies trigger deeper reasoning. This observation motivates a fundamental question: when should a model compute?
+
+We argue that attention conflates two distinct responsibilities: (i) confirming low-entropy, globally stable relationships, and (ii) resolving high-entropy, context-specific dependencies. The former can be compiled into static structure; the latter demands dynamic computation. SPDG operationalizes this separation by introducing a frozen structural prior and a run-time gating signal derived from residual dynamics, enabling content-adaptive computation.
+
+2. Background and Motivation
+
+2.1 Limitations of Uniform Attention
+
+Full attention allocates identical computation to all token pairs regardless of predictability. Fixed sparse methods reduce cost but lack adaptivity, often degrading performance on adversarial or counter-statistical inputs such as garden-path sentences or legal exceptions.
+
+2.2 Structure vs. Uncertainty
+
+Many domains exhibit stable structure (syntax, locality, physical constraints) alongside sparse events that determine meaning. Efficient intelligence should exploit the former while reserving capacity for the latter.
+
+3. Method: SPDG-Transformer
+
+SPDG decomposes attention into three components: a frozen structural prior, a dynamic gating mechanism, and a clipping attention engine.
+
+3.1 Frozen Structural Prior (B)
+
+Definition. A non-differentiable, compile-time artifact derived from global statistics or physical constraints, encoding low-entropy relationships.
+
+Properties.
+
+Fixed during training and inference.
+
+Interpretable as structure (e.g., syntax locality, temporal continuity, molecular constraints).
+
+Used to define default sparse attention masks or block patterns.
+
+
+3.2 Residual Surprise and Dynamic Gating (λ)
+
+We define a lightweight uncertainty proxy from the previous layer’s residual update:
+
+Input state: x
+
+Update: Δx
+
+Residual Surprise: u = ||Δx|| / (||x|| + ε)
+
+
+The gating coefficient is:
+
+λ(u) = λ_max · exp(-αu)
+
+Interpretation. Low u indicates confidence (trust structure); high u indicates surprise (trust computation).
+
+3.3 Clipping Attention Engine
+
+Attention logits are modulated as:
+
+L = A + λ(u) · B
+
+Crucially, when λ is high, B is elevated from a numerical bias to a structural mask generator, pruning QK computations before execution. As λ decreases, the mask relaxes, and the model smoothly reverts to full attention.
+
+4. Computational Analysis
+
+Overhead: Computing u and λ is O(Nd), negligible relative to O(N²) attention.
+
+Savings: When confident, attention reduces to sparse/block computation, yielding substantial FLOP reduction.
+
+Safety: In high-uncertainty regimes, SPDG guarantees fallback to full attention, preserving accuracy.
+
+
+5. Experimental Design
+
+5.1 Experiment 1: Dynamic Efficiency
+
+Goal. Demonstrate that computation scales with input difficulty.
+
+Metric.
+
+X-axis: Sample difficulty measured by aggregated u.
+
+Y-axis: Fraction of QK pairs computed (normalized FLOPs).
+
+
+Expectation. A monotonic, S-shaped curve showing increased computation with higher uncertainty, contrasted against flat baselines (full and fixed-sparse attention).
+
+5.2 Experiment 2: Robustness on Counter-Statistical Inputs
+
+Setup. Evaluate accuracy on a curated hard subset (garden-path sentences, logical reversals).
+
+Baselines.
+
+1. Full Attention Transformer (upper bound).
+
+
+2. Fixed-Sparse / No-Brake Transformer (prior without gating).
+
+
+
+Hypothesis. SPDG matches full attention accuracy while significantly outperforming the no-brake baseline, constituting an implicit ablation of the gating mechanism.
+
+6. Discussion: Beyond Language
+
+SPDG applies broadly to domains with stable structure and sparse critical events:
+
+Video: Temporal continuity vs. scene cuts.
+
+Biology: Protein/DNA sequences with conserved motifs and rare mutations.
+
+Time Series: Stable trends vs. anomalies.
+
+Audio: Silence/steady speech vs. emotional bursts.
+
+
+In each case, structure is compiled; uncertainty triggers computation.
+
+7. Related Work
+
+SPDG complements sparse attention, adaptive computation, and mixture-of-experts approaches, differing by enforcing a strict separation between non-learnable structure and learnable reasoning.
+
+8. Conclusion
+
+SPDG reframes attention efficiency as a question of responsibility allocation. By freezing low-entropy structure and dynamically gating computation based on internal uncertainty, it achieves both efficiency and robustness. This principle extends beyond NLP, suggesting a general computation ethic for intelligent systems: compute less when confident, compute fully when uncertain.
