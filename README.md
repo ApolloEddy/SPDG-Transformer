@@ -295,10 +295,10 @@ SPDG框架可扩展到其他模态：
 如果使用本代码，请引用：
 
 ```bibtex
-@article{spdg2024,
+@article{spdg2026,
   title={SPDG-Transformer: Static-Prior Dynamic-Gating Attention},
   author={SPDG Research Team},
-  year={2024}
+  year={2026}
 }
 ```
 
