@@ -1,7 +1,9 @@
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Tuple
+
+from attention_ops import scaled_dot_product_attention
 
 
 class FullAttentionMultiHead(nn.Module):
@@ -30,21 +32,21 @@ class FullAttentionMultiHead(nn.Module):
         K = self.k_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         V = self.v_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         
-        attention_scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
-        
-        if attention_mask is not None:
-            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            attention_scores = attention_scores.masked_fill(attention_mask == 0, float('-inf'))
-        
-        attention_weights = F.softmax(attention_scores, dim=-1)
-        attention_weights = self.dropout(attention_weights)
-        
-        output = torch.matmul(attention_weights, V)
-        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
+        result = scaled_dot_product_attention(
+            Q,
+            K,
+            V,
+            attention_mask=attention_mask,
+            dropout_p=self.dropout.p,
+            training=self.training,
+            return_attention=return_attention,
+        )
+
+        output = result.output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
         output = self.out_proj(output)
-        
+
         if return_attention:
-            return output, attention_weights
+            return output, result.attention_info
         return output, None
 
 

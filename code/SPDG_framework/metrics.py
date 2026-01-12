@@ -157,9 +157,16 @@ class MetricsCalculator:
                 
                 if attention_weights:
                     for attn in attention_weights:
-                        batch_size, n_heads, seq_len, _ = attn.shape
-                        zero_ratio = (attn == 0).float().mean().item()
-                        sparsity_ratios.append(zero_ratio)
+                        attn_items = attn if isinstance(attn, list) else [attn]
+                        for item in attn_items:
+                            if item["mode"] == "full":
+                                weights = item["weights"]
+                                zero_ratio = (weights == 0).float().mean().item()
+                                sparsity_ratios.append(zero_ratio)
+                            else:
+                                seq_len = item["seq_len"]
+                                k = item["weights"].size(-1)
+                                sparsity_ratios.append(1.0 - (k / seq_len))
         
         return {
             'mean_sparsity': np.mean(sparsity_ratios),
@@ -190,9 +197,14 @@ class MetricsCalculator:
                 
                 if attention_weights:
                     for attn in attention_weights:
-                        batch_size, n_heads, seq_len, _ = attn.shape
-                        non_zero_ratio = (attn > 0).float().mean().item()
-                        computation_ratios.append(non_zero_ratio)
+                        attn_items = attn if isinstance(attn, list) else [attn]
+                        for item in attn_items:
+                            if item["mode"] == "full":
+                                computation_ratios.append(1.0)
+                            else:
+                                seq_len = item["seq_len"]
+                                k = item["weights"].size(-1)
+                                computation_ratios.append(k / seq_len)
         
         return {
             'mean_computation_ratio': np.mean(computation_ratios),
@@ -420,8 +432,14 @@ class MetricsTracker:
                         
                         if attention_weights:
                             for attn in attention_weights:
-                                non_zero_ratio = (attn > 0).float().mean().item()
-                                computation_ratios.append(non_zero_ratio)
+                                attn_items = attn if isinstance(attn, list) else [attn]
+                                for item in attn_items:
+                                    if item["mode"] == "full":
+                                        computation_ratios.append(1.0)
+                                    else:
+                                        seq_len = item["seq_len"]
+                                        k = item["weights"].size(-1)
+                                        computation_ratios.append(k / seq_len)
                         
                         if u_list:
                             for u in u_list:

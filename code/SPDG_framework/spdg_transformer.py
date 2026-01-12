@@ -22,9 +22,11 @@ class SPDGTransformerLayer(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        u_prev: Optional[torch.Tensor] = None,
         return_attention: bool = False
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-        return self.attention(x, return_attention)
+        return self.attention(x, attention_mask, u_prev, return_attention)
 
 
 class SPDGTransformer(nn.Module):
@@ -93,12 +95,14 @@ class SPDGTransformer(nn.Module):
         attention_weights_list = []
         u_list = []
         
+        u_prev = None
         for layer in self.layers:
-            x, attn_weights, u = layer(x, return_attention)
+            x, attn_weights, u = layer(x, attention_mask, u_prev, return_attention)
             if return_attention and attn_weights is not None:
                 attention_weights_list.append(attn_weights)
             if return_u and u is not None:
                 u_list.append(u)
+            u_prev = u
         
         x = self.norm(x)
         

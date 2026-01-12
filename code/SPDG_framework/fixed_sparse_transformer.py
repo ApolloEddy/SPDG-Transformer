@@ -1,11 +1,22 @@
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Tuple
+
+from attention_ops import sparse_scaled_dot_product_attention
+from spdg_components import FrozenStructuralPrior
 
 
 class FixedSparseMultiHead(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, seq_len: int, sparsity: float = 0.1, pattern: str = 'local', dropout: float = 0.1):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        seq_len: int,
+        sparsity: float = 0.1,
+        pattern: str = 'local',
+        dropout: float = 0.1,
+    ):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
@@ -13,45 +24,16 @@ class FixedSparseMultiHead(nn.Module):
         self.seq_len = seq_len
         self.sparsity = sparsity
         self.pattern = pattern
-        
+
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
-        
+
         self.dropout = nn.Dropout(dropout)
-        
-        self.register_buffer('sparse_mask', self._generate_sparse_mask())
-    
-    def _generate_sparse_mask(self) -> torch.Tensor:
-        mask = torch.ones(self.seq_len, self.seq_len)
-        
-        if self.pattern == 'local':
-            window_size = int(self.seq_len * self.sparsity)
-            for i in range(self.seq_len):
-                mask[i, :max(0, i - window_size // 2)] = 0.0
-                mask[i, min(self.seq_len, i + window_size // 2 + 1):] = 0.0
-        
-        elif self.pattern == 'global':
-            num_global = int(self.seq_len * self.sparsity)
-            for i in range(self.seq_len):
-                indices = torch.randperm(self.seq_len)[:num_global]
-                sparse_mask = torch.ones(self.seq_len)
-                sparse_mask[indices] = 0.0
-                mask[i] = sparse_mask
-        
-        elif self.pattern == 'block':
-            block_size = int(self.seq_len * (1 - self.sparsity) ** 0.5)
-            num_blocks = self.seq_len // block_size
-            for bi in range(num_blocks):
-                for bj in range(num_blocks):
-                    if abs(bi - bj) > 1:
-                        start_i, end_i = bi * block_size, min((bi + 1) * block_size, self.seq_len)
-                        start_j, end_j = bj * block_size, min((bj + 1) * block_size, self.seq_len)
-                        mask[start_i:end_i, start_j:end_j] = 0.0
-        
-        return mask
-    
+
+        self.structural_prior = FrozenStructuralPrior(seq_len, sparsity, pattern)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -63,28 +45,25 @@ class FixedSparseMultiHead(nn.Module):
         Q = self.q_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         K = self.k_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         V = self.v_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        
-        attention_scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
-        
-        if seq_len <= self.seq_len:
-            sparse_mask = self.sparse_mask[:seq_len, :seq_len].unsqueeze(0).unsqueeze(0)
-            attention_scores = attention_scores.masked_fill(sparse_mask == 0.0, float('-inf'))
-        else:
-            attention_scores = attention_scores.masked_fill(torch.ones_like(attention_scores, dtype=torch.bool) == False, float('-inf'))
-        
-        if attention_mask is not None:
-            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            attention_scores = attention_scores.masked_fill(attention_mask == 0, float('-inf'))
-        
-        attention_weights = F.softmax(attention_scores, dim=-1)
-        attention_weights = self.dropout(attention_weights)
-        
-        output = torch.matmul(attention_weights, V)
-        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
+
+        indices, index_mask = self.structural_prior.get_indices(seq_len)
+        result = sparse_scaled_dot_product_attention(
+            Q,
+            K,
+            V,
+            indices,
+            index_mask=index_mask,
+            attention_mask=attention_mask,
+            dropout_p=self.dropout.p,
+            training=self.training,
+            return_attention=return_attention,
+        )
+
+        output = result.output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
         output = self.out_proj(output)
-        
+
         if return_attention:
-            return output, attention_weights
+            return output, result.attention_info
         return output, None
 
 

@@ -45,7 +45,11 @@ class ModelValidator:
             
             if attention_weights:
                 print(f'Attention weights layers: {len(attention_weights)}')
-                print(f'Attention weights shape: {attention_weights[0].shape}')
+                first = attention_weights[0][0] if isinstance(attention_weights[0], list) else attention_weights[0]
+                if first["mode"] == "full":
+                    print(f'Attention weights shape: {first["weights"].shape}')
+                else:
+                    print(f'Attention weights shape: {first["weights"].shape} (sparse)')
             
             if u is not None and len(u) > 0:
                 print(f'Residual surprise u layers: {len(u)}')
@@ -88,11 +92,14 @@ class ModelValidator:
                 logits, attention_weights, u = model(input_ids, attention_mask, return_attention=True, return_u=True)
             
             if attention_weights:
-                attn = attention_weights[0]
-                non_zero_ratio = (attn > 0).float().mean().item()
-                print(f'Actual computation ratio: {non_zero_ratio:.4f}')
+                attn = attention_weights[0][0] if isinstance(attention_weights[0], list) else attention_weights[0]
+                if attn["mode"] == "full":
+                    ratio = 1.0
+                else:
+                    ratio = attn["weights"].size(-1) / attn["seq_len"]
+                print(f'Actual computation ratio: {ratio:.4f}')
                 
-                if non_zero_ratio < 0.5:
+                if ratio < 0.5:
                     print('✓ Low surprise triggers sparse attention')
                 else:
                     print('⚠ Warning: Low surprise did not trigger sparse attention as expected')
@@ -108,11 +115,14 @@ class ModelValidator:
                 logits, attention_weights, u = model(input_ids, attention_mask, return_attention=True, return_u=True)
             
             if attention_weights:
-                attn = attention_weights[0]
-                non_zero_ratio = (attn > 0).float().mean().item()
-                print(f'Actual computation ratio: {non_zero_ratio:.4f}')
+                attn = attention_weights[0][0] if isinstance(attention_weights[0], list) else attention_weights[0]
+                if attn["mode"] == "full":
+                    ratio = 1.0
+                else:
+                    ratio = attn["weights"].size(-1) / attn["seq_len"]
+                print(f'Actual computation ratio: {ratio:.4f}')
                 
-                if non_zero_ratio > 0.7:
+                if ratio > 0.7:
                     print('✓ High surprise triggers full attention')
                 else:
                     print('⚠ Warning: High surprise did not trigger full attention as expected')
