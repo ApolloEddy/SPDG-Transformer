@@ -109,14 +109,23 @@ def create_dataloader(dataset_name="synthetic", split="train", batch_size=8, seq
             print(f"Failed to load from Hugging Face: {e}")
             
             if HAS_MODELSCOPE:
-                print("Trying Model Scape...")
+                print("Trying ModelScope...")
                 
-                # 使用Model Scape加载数据集
-                dataset = MsDataset.load(
-                    dataset_name,
-                    split=split,
-                    **kwargs
-                )
+                # ModelScope dataset loading
+                # For GLUE, ModelScope uses 'glue' as dataset_name and task_name as subset_name
+                if dataset_name == 'glue' and task_name:
+                    dataset = MsDataset.load(
+                        dataset_name,
+                        subset_name=task_name,
+                        split=split,
+                        **kwargs
+                    )
+                else:
+                    dataset = MsDataset.load(
+                        dataset_name,
+                        split=split,
+                        **kwargs
+                    )
                 
                 # 对Model Scape数据集进行预处理
                 def preprocess_ms_function(examples):

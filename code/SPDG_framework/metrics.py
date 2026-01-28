@@ -168,6 +168,14 @@ class MetricsCalculator:
                                 k = item["weights"].size(-1)
                                 sparsity_ratios.append(1.0 - (k / seq_len))
         
+        if not sparsity_ratios:
+            return {
+                'mean_sparsity': 0.0,
+                'std_sparsity': 0.0,
+                'min_sparsity': 0.0,
+                'max_sparsity': 0.0
+            }
+
         return {
             'mean_sparsity': np.mean(sparsity_ratios),
             'std_sparsity': np.std(sparsity_ratios),
@@ -206,6 +214,14 @@ class MetricsCalculator:
                                 k = item["weights"].size(-1)
                                 computation_ratios.append(k / seq_len)
         
+        if not computation_ratios:
+            return {
+                'mean_computation_ratio': 1.0,
+                'std_computation_ratio': 0.0,
+                'min_computation_ratio': 1.0,
+                'max_computation_ratio': 1.0
+            }
+
         return {
             'mean_computation_ratio': np.mean(computation_ratios),
             'std_computation_ratio': np.std(computation_ratios),

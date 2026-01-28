@@ -61,7 +61,11 @@ def sparse_scaled_dot_product_attention(
     k_selected = k[:, :, indices]
     v_selected = v[:, :, indices]
 
-    logits = (q.unsqueeze(3) * k_selected).sum(dim=-1) / math.sqrt(head_dim)
+    # Memory efficient implementation using einsum
+    # q: (B, H, L, D)
+    # k_selected: (B, H, L, W, D)
+    # logits: (B, H, L, W)
+    logits = torch.einsum('bhld,bhlwd->bhlw', q, k_selected) / math.sqrt(head_dim)
 
     if logit_bias is not None:
         logit_bias_selected = logit_bias[:, :, indices]

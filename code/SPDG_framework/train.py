@@ -46,7 +46,7 @@ class ExperimentConfig:
         }
         
         self.training_configs = {
-            'batch_size': 32,
+            'batch_size': 16,
             'learning_rate': 5e-5,
             'num_epochs': 10,
             'warmup_steps': 100,
@@ -271,21 +271,26 @@ class ExperimentRunner:
         dataset_config = self.config.dataset_configs[dataset_name]
         model_config = self.config.model_configs[model_type]
         
-        train_loader = create_dataloader(
-            dataset_name,
-            split='train',
-            batch_size=self.config.training_configs['batch_size'],
-            shuffle=True,
-            **dataset_config
-        )
-        
-        val_loader = create_dataloader(
-            dataset_name,
-            split='validation',
-            batch_size=self.config.training_configs['batch_size'],
-            shuffle=False,
-            **dataset_config
-        )
+        try:
+            train_loader = create_dataloader(
+                dataset_name,
+                split='train',
+                batch_size=self.config.training_configs['batch_size'],
+                shuffle=True,
+                **dataset_config
+            )
+            
+            val_loader = create_dataloader(
+                dataset_name,
+                split='validation',
+                batch_size=self.config.training_configs['batch_size'],
+                shuffle=False,
+                **dataset_config
+            )
+        except Exception as e:
+            print(f"Failed to create dataloaders for {dataset_name}: {e}")
+            print("Skipping this experiment due to data loading error (likely network issue or missing data).")
+            raise e
         
         vocab_size = dataset_config.get('vocab_size', 30522)
         n_classes = dataset_config.get('n_classes', None)
@@ -326,8 +331,17 @@ class ExperimentRunner:
         for dataset in datasets:
             for model in models:
                 try:
+                    # Clear memory before starting new experiment
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        
                     results = self.run_experiment(dataset, model)
                     all_results[f'{model}_{dataset}'] = results
+                    
+                    # Clear memory after experiment
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        
                 except Exception as e:
                     print(f'Error running {model} on {dataset}: {str(e)}')
                     import traceback

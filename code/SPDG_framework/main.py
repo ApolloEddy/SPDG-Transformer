@@ -71,7 +71,8 @@ def evaluate_models(config):
     
     tracker = MetricsTracker(config.output_dir, config.device)
     
-    vocab_size = 30522
+    dataset_config = config.dataset_configs.get('synthetic', {})
+    vocab_size = dataset_config.get('vocab_size', 30522)
     n_classes = 2
     
     models = {
@@ -109,6 +110,24 @@ def evaluate_models(config):
             n_classes=n_classes
         ).to(config.device)
     }
+    
+    # Try to load trained weights if available
+    checkpoint_dir = os.path.join(config.output_dir, 'checkpoints')
+    for model_name, model in models.items():
+        # Look for the last checkpoint for this model (on synthetic as default)
+        # In a real scenario we might want to specify which checkpoint to load
+        # Here we look for epoch 10 or 5 or...
+        for epoch in [10, 5, 1]:
+            checkpoint_path = os.path.join(checkpoint_dir, f'{model_name}_synthetic_epoch_{epoch}.pt')
+            if os.path.exists(checkpoint_path):
+                print(f"Loading checkpoint for {model_name} from {checkpoint_path}")
+                try:
+                    checkpoint = torch.load(checkpoint_path, map_location=config.device)
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                    print(f"Successfully loaded {model_name} checkpoint (epoch {epoch})")
+                    break
+                except Exception as e:
+                    print(f"Failed to load checkpoint for {model_name}: {e}")
     
     datasets = ['synthetic']
     
