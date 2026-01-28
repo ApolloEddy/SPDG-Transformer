@@ -182,12 +182,22 @@ def main():
     parser.add_argument('--validate-only', action='store_true', help='Only run model validation')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'cpu'],
                        help='Device to use (auto, cuda, cpu)')
+    parser.add_argument('--fast', action='store_true', help='Run fast experiment with fewer epochs and samples')
     
     args = parser.parse_args()
     
     setup_environment()
     
     config = ExperimentConfig()
+    
+    if args.fast:
+        print("Running in FAST mode: 1 epoch, 100 samples.")
+        config.training_configs['num_epochs'] = 1
+        config.training_configs['batch_size'] = 8
+        if 'synthetic' in config.dataset_configs:
+            config.dataset_configs['synthetic']['num_samples'] = 100
+        if 'logical_reversal' in config.dataset_configs:
+            config.dataset_configs['logical_reversal']['num_samples'] = 100
     
     if args.device != 'auto':
         config.device = torch.device(args.device)

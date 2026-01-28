@@ -55,6 +55,13 @@ class ExperimentConfig:
         }
         
         self.dataset_configs = {
+            'synthetic': {
+                'num_samples': 1000,
+                'seq_length': 512,
+                'vocab_size': 10000,
+                'difficulty': 0.5,
+                'n_classes': 2
+            },
             'glue': {
                 'task_name': 'sst2',
                 'max_length': 512,
@@ -79,6 +86,8 @@ class ExperimentConfig:
         self.output_dir = 'results/SPDG_experiment'
         self.log_dir = os.path.join(self.output_dir, 'logs')
         self.checkpoint_dir = os.path.join(self.output_dir, 'checkpoints')
+        self.metrics_dir = os.path.join(self.output_dir, 'metrics')
+        self.figures_dir = os.path.join(self.output_dir, 'figures')
 
 
 class Trainer:
@@ -102,6 +111,8 @@ class Trainer:
         
         os.makedirs(config.log_dir, exist_ok=True)
         os.makedirs(config.checkpoint_dir, exist_ok=True)
+        os.makedirs(config.metrics_dir, exist_ok=True)
+        os.makedirs(config.figures_dir, exist_ok=True)
         
         self.metrics_history = {
             'train_loss': [],
@@ -307,7 +318,7 @@ class ExperimentRunner:
         return metrics
     
     def run_all_experiments(self):
-        datasets = ['synthetic']
+        datasets = ['synthetic', 'glue']
         models = ['spdg', 'full', 'fixed']
         
         all_results = {}
@@ -319,6 +330,8 @@ class ExperimentRunner:
                     all_results[f'{model}_{dataset}'] = results
                 except Exception as e:
                     print(f'Error running {model} on {dataset}: {str(e)}')
+                    import traceback
+                    traceback.print_exc()
                     all_results[f'{model}_{dataset}'] = None
         
         self.save_results(all_results)

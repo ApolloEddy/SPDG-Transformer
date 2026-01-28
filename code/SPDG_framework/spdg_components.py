@@ -158,54 +158,70 @@ class ClippingAttentionEngine(nn.Module):
         sparse_threshold = 1.0
         use_sparse = (lambda_coef.view(batch_size) >= sparse_threshold)
 
-        outputs = []
-        attention_infos = [] if return_attention else None
+        # Vectorized implementation
+        outputs = torch.zeros(batch_size, seq_len, self.d_model, device=x.device, dtype=x.dtype)
+        
+        # indices
+        sparse_indices = torch.nonzero(use_sparse).squeeze(-1)
+        full_indices = torch.nonzero(~use_sparse).squeeze(-1)
+        
+        # 1. Process Sparse Path
+        if sparse_indices.numel() > 0:
+            Q_s = Q.index_select(0, sparse_indices)
+            K_s = K.index_select(0, sparse_indices)
+            V_s = V.index_select(0, sparse_indices)
+            
+            sparse_result = sparse_scaled_dot_product_attention(
+                Q_s, K_s, V_s,
+                indices=prior_indices[:seq_len],
+                index_mask=prior_index_mask[:seq_len],
+                attention_mask=attention_mask.index_select(0, sparse_indices) if attention_mask is not None else None,
+                dropout_p=self.dropout.p,
+                training=self.training,
+                return_attention=return_attention,
+            )
+            
+            # (B_s, H, Seq, Dim) -> (B_s, Seq, H, Dim) -> (B_s, Seq, D_model)
+            sparse_out = sparse_result.output.transpose(1, 2).contiguous().view(sparse_indices.size(0), seq_len, self.d_model)
+            sparse_out = self.out_proj(sparse_out)
+            outputs.index_put_((sparse_indices,), sparse_out)
 
-        for idx in range(batch_size):
-            if use_sparse[idx]:
-                result: AttentionOutput = sparse_scaled_dot_product_attention(
-                    Q[idx : idx + 1],
-                    K[idx : idx + 1],
-                    V[idx : idx + 1],
-                    prior_indices[:seq_len],
-                    index_mask=prior_index_mask[:seq_len],
-                    attention_mask=attention_mask[idx : idx + 1] if attention_mask is not None else None,
-                    dropout_p=self.dropout.p,
-                    training=self.training,
-                    return_attention=return_attention,
-                )
-            else:
-                prior_bias = torch.where(
-                    prior_mask[:seq_len, :seq_len],
-                    torch.tensor(0.0, device=x.device, dtype=x.dtype),
-                    torch.tensor(-1.0, device=x.device, dtype=x.dtype),
-                )
-                logit_bias = lambda_coef[idx] * prior_bias
-                logit_bias = logit_bias.unsqueeze(0).unsqueeze(0)
-                result = scaled_dot_product_attention(
-                    Q[idx : idx + 1],
-                    K[idx : idx + 1],
-                    V[idx : idx + 1],
-                    attention_mask=attention_mask[idx : idx + 1] if attention_mask is not None else None,
-                    logit_bias=logit_bias,
-                    dropout_p=self.dropout.p,
-                    training=self.training,
-                    return_attention=return_attention,
-                )
-                if return_attention:
-                    result.attention_info["prior_bias"] = lambda_coef[idx].item()
-
-            outputs.append(result.output)
-            if return_attention:
-                attention_infos.append(result.attention_info)
-
-        attention_output = torch.cat(outputs, dim=0)
-        attention_output = attention_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
-        attention_output = self.out_proj(attention_output)
+        # 2. Process Full Path
+        if full_indices.numel() > 0:
+            Q_f = Q.index_select(0, full_indices)
+            K_f = K.index_select(0, full_indices)
+            V_f = V.index_select(0, full_indices)
+            
+            prior_bias = torch.where(
+                prior_mask[:seq_len, :seq_len],
+                torch.tensor(0.0, device=x.device, dtype=x.dtype),
+                torch.tensor(-1.0, device=x.device, dtype=x.dtype),
+            )
+            
+            # lambda_coef is (B, 1, 1, 1). Select -> (B_f, 1, 1, 1)
+            # Ensure proper reshaping for broadcasting
+            lambda_f = lambda_coef.index_select(0, full_indices)
+            
+            # (B_f, 1, Seq, Seq)
+            logit_bias = lambda_f * prior_bias.unsqueeze(0).unsqueeze(0)
+            
+            full_result = scaled_dot_product_attention(
+                Q_f, K_f, V_f,
+                attention_mask=attention_mask.index_select(0, full_indices) if attention_mask is not None else None,
+                logit_bias=logit_bias,
+                dropout_p=self.dropout.p,
+                training=self.training,
+                return_attention=return_attention,
+            )
+            
+            full_out = full_result.output.transpose(1, 2).contiguous().view(full_indices.size(0), seq_len, self.d_model)
+            full_out = self.out_proj(full_out)
+            outputs.index_put_((full_indices,), full_out)
 
         if return_attention:
-            return attention_output, attention_infos
-        return attention_output, None
+            # We skip detailed attention info for speed/memory in vectorized mode
+            return outputs, None
+        return outputs, None
 
 
 class SPDGMultiHeadAttention(nn.Module):

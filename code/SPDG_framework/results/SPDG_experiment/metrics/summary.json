@@ -1,0 +1,8 @@
+{
+  "inference": {
+    "num_models": 3,
+    "avg_accuracy": 0.49733333333333335,
+    "avg_inference_time": 0.003834616666666809,
+    "avg_throughput": 262.7868345352367
+  }
+}
