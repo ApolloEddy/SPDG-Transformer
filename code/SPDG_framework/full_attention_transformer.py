@@ -1,90 +1,13 @@
-from typing import Optional, Tuple
-
 import torch
 import torch.nn as nn
-
-from attention_ops import scaled_dot_product_attention
-
-
-class FullAttentionMultiHead(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
-        super().__init__()
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
-        
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
-        
-        self.dropout = nn.Dropout(dropout)
-    
-    def forward(
-        self,
-        x: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        return_attention: bool = False
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        batch_size, seq_len, _ = x.shape
-        
-        Q = self.q_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        K = self.k_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        V = self.v_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        
-        result = scaled_dot_product_attention(
-            Q,
-            K,
-            V,
-            attention_mask=attention_mask,
-            dropout_p=self.dropout.p,
-            training=self.training,
-            return_attention=return_attention,
-        )
-
-        output = result.output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
-        output = self.out_proj(output)
-
-        if return_attention:
-            return output, result.attention_info
-        return output, None
-
-
-class FullAttentionTransformerLayer(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
-        super().__init__()
-        self.attention = FullAttentionMultiHead(d_model, n_heads, dropout)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, 4 * d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(4 * d_model, d_model),
-            nn.Dropout(dropout)
-        )
-    
-    def forward(
-        self,
-        x: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        return_attention: bool = False
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        residual = x
-        x = self.norm1(x)
-        attn_out, attn_weights = self.attention(x, attention_mask, return_attention)
-        x = residual + attn_out
-        
-        residual = x
-        x = self.norm2(x)
-        x = residual + self.ffn(x)
-        
-        if return_attention:
-            return x, attn_weights
-        return x, None
-
+from typing import Optional, Tuple, List, Any
+from spdg_components import SPDGTransformerLayer
 
 class FullAttentionTransformer(nn.Module):
+    """
+    Standard Transformer aligned with SPDG implementation to ensure fair experimental comparison.
+    The only difference is that the gating coefficient is fixed to 0.
+    """
     def __init__(
         self,
         vocab_size: int,
@@ -93,7 +16,8 @@ class FullAttentionTransformer(nn.Module):
         n_layers: int = 6,
         seq_len: int = 512,
         dropout: float = 0.1,
-        n_classes: Optional[int] = None
+        n_classes: Optional[int] = None,
+        dim_feedforward: int = 2048,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -103,15 +27,23 @@ class FullAttentionTransformer(nn.Module):
         self.seq_len = seq_len
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_embedding = nn.Embedding(seq_len, d_model)
+        self.pos_embedding = nn.Parameter(torch.zeros(1, seq_len, d_model))
+        self.dropout = nn.Dropout(dropout)
         
+        # Use the SAME layer implementation as SPDG, but with sparsity logic disabled in forward
         self.layers = nn.ModuleList([
-            FullAttentionTransformerLayer(d_model, n_heads, dropout)
-            for _ in range(n_layers)
+            SPDGTransformerLayer(
+                d_model=d_model,
+                n_heads=n_heads,
+                seq_len=seq_len,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                sparsity=0.0, # NO SPARSITY pattern
+                pattern='local'
+            ) for _ in range(n_layers)
         ])
         
         self.norm = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
         
         if n_classes is not None:
             self.classifier = nn.Linear(d_model, n_classes)
@@ -121,13 +53,10 @@ class FullAttentionTransformer(nn.Module):
         self._init_weights()
     
     def _init_weights(self):
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, mean=0.0, std=0.02)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Embedding):
-                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+        nn.init.normal_(self.pos_embedding, std=0.02)
     
     def forward(
         self,
@@ -135,43 +64,36 @@ class FullAttentionTransformer(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         return_attention: bool = False,
         return_u: bool = False
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, Optional[List[Any]], Optional[List[torch.Tensor]]]:
         batch_size, seq_len = input_ids.shape
-        
-        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
-        
-        x = self.token_embedding(input_ids) + self.pos_embedding(positions)
+        x = self.token_embedding(input_ids) + self.pos_embedding[:, :seq_len, :]
         x = self.dropout(x)
         
-        attention_weights_list = []
+        # In Full Attention, we pass u_prev as a huge negative number or 
+        # modify the layer to ignore gating. 
+        # A cleaner way: pass a lambda_override of 0.
         
         for layer in self.layers:
-            x, attn_weights = layer(x, attention_mask, return_attention)
-            if return_attention and attn_weights is not None:
-                attention_weights_list.append(attn_weights)
+            # Force surprise to be very high so lambda becomes 0 (Full Attention)
+            # lambda = lambda_max * exp(-alpha * u)
+            # If u is very large (e.g. 100), lambda -> 0
+            u_force_full = torch.full((batch_size, 1), 100.0, device=x.device, dtype=x.dtype)
+            x, _ = layer(x, u_prev=u_force_full, src_mask=attention_mask)
         
         x = self.norm(x)
         
         if attention_mask is not None:
-            mask = attention_mask.unsqueeze(-1).expand(x.size()).float()
-            x = x * mask
-        
-        pooled = x.mean(dim=1)
-        logits = self.classifier(pooled)
-        
-        if return_attention:
-            return logits, attention_weights_list, None
+            mask = attention_mask.unsqueeze(-1).to(x.dtype)
+            pooled = (x * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-9)
         else:
-            return logits, None, None
-    
+            pooled = x.mean(dim=1)
+            
+        logits = self.classifier(pooled)
+        return logits, None, None
+
     def get_sparsity_stats(self) -> dict:
-        stats = {
-            'model_type': 'Full-Attention-Transformer',
+        return {
+            'model_type': 'Full-Attention-Control',
             'd_model': self.d_model,
-            'n_heads': self.n_heads,
-            'n_layers': self.n_layers,
-            'seq_len': self.seq_len,
-            'sparsity': 0.0,
-            'pattern': 'full'
+            'status': 'standard-aligned-shared-ops'
         }
-        return stats
