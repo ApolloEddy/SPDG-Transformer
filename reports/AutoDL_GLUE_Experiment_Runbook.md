@@ -33,17 +33,23 @@
 
 ## 3. 网络环境
 
-本实验脚本默认使用官方 Hugging Face 端点，不走镜像。启动脚本会设置：
+本实验脚本默认使用 `hf-mirror.com` 作为 Hugging Face 镜像端点。启动脚本会设置：
 
 ```bash
-export HF_ENDPOINT=https://huggingface.co
+export HF_ENDPOINT=https://hf-mirror.com
 export HF_HOME=/path/to/cache
 export HF_DATASETS_CACHE=/path/to/cache/datasets
 export TRANSFORMERS_CACHE=/path/to/cache/transformers
 export TOKENIZERS_PARALLELISM=false
 ```
 
-如果 AutoDL 机器能直连外网，保持默认即可。
+如果镜像可用，保持默认即可。
+
+如果你的 AutoDL 能直接访问官方主站，也可以覆盖为：
+
+```bash
+export HF_ENDPOINT=https://huggingface.co
+```
 
 如果你需要代理，可在运行前自行导出：
 
@@ -53,6 +59,17 @@ export HTTPS_PROXY=http://host:port
 ```
 
 脚本会把这些环境变量写入最终的 `environment.json`。
+
+在真正下载前，建议先做一次“只探测镜像、不下载任何模型和数据”的检查：
+
+```bash
+CHECK_ONLY=1 \
+DEVICE=cpu \
+TASKS="sst2" \
+bash code/SPDG_framework/bench/run_autodl_glue_suite.sh
+```
+
+这会在输出目录下生成 `artifacts/connectivity_check.json`。
 
 ## 4. 数据集与任务建议
 

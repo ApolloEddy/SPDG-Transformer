@@ -40,3 +40,12 @@
 
 ### Notes
 - 当前本地仅完成 Python 级静态验证：`run_autodl_glue_suite.py` 已通过 AST 解析与 `--help` 检查；由于当前 Windows 环境没有 `bash`，`run_autodl_glue_suite.sh` 未做本地语法执行验证。
+
+### Changed
+- 将 AutoDL GLUE 实验脚本与启动脚本的默认 Hugging Face 端点切换为 `https://hf-mirror.com`，以适配主站不可达的服务器环境，同时保留通过 `HF_ENDPOINT` 或 `--hf-endpoint` 覆盖回官方主站的能力。
+
+### Added
+- 为 `run_autodl_glue_suite.py` 新增 `--hf-endpoint` 与 `--check-only`，支持在不下载模型和数据集的前提下，仅验证镜像站连通性并输出 `artifacts/connectivity_check.json`。
+
+### Notes
+- 已在本地执行 `--check-only` 对 `https://hf-mirror.com` 做零下载探测，`bert-base-uncased` 的 `tokenizer_config.json`、`vocab.txt` 以及 `GLUE` 数据集页面/README 均返回 `200`，可作为 AutoDL 端的默认镜像配置。

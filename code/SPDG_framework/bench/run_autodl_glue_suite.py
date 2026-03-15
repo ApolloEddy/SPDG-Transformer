@@ -5,6 +5,8 @@ import os
 import platform
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -92,6 +94,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ablation-task", default="sst2")
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--tokenizer-name", default="bert-base-uncased")
+    parser.add_argument("--hf-endpoint", default=os.environ.get("HF_ENDPOINT", "https://hf-mirror.com"))
     parser.add_argument("--output-dir", default=str(ROOT / "results" / "autodl_glue_suite"))
     parser.add_argument("--cache-dir", default=str(ROOT / "data" / "hf_cache"))
     parser.add_argument("--epochs", type=int, default=3)
@@ -114,6 +117,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-scaling", action="store_true")
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--save-checkpoints", action="store_true")
+    parser.add_argument("--check-only", action="store_true", help="Only check mirror connectivity without downloading data.")
     return parser.parse_args()
 
 
@@ -146,11 +150,12 @@ def ensure_dirs(output_dir: Path) -> Dict[str, Path]:
     return paths
 
 
-def configure_hf_environment(cache_dir: Path) -> None:
+def configure_hf_environment(cache_dir: Path, hf_endpoint: str) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("HF_HOME", str(cache_dir))
     os.environ.setdefault("HF_DATASETS_CACHE", str(cache_dir / "datasets"))
     os.environ.setdefault("TRANSFORMERS_CACHE", str(cache_dir / "transformers"))
+    os.environ["HF_ENDPOINT"] = hf_endpoint.rstrip("/")
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
@@ -234,6 +239,49 @@ def save_csv(path: Path, rows: Sequence[Dict[str, object]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def probe_url(url: str, timeout_s: float = 15.0) -> Dict[str, object]:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler())
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; SPDG-Transformer/1.0)"}
+    request = urllib.request.Request(url, method="HEAD", headers=headers)
+    started_at = time.perf_counter()
+    try:
+        with opener.open(request, timeout=timeout_s) as response:
+            elapsed = time.perf_counter() - started_at
+            return {"url": url, "ok": True, "status": response.status, "elapsed_s": elapsed}
+    except urllib.error.HTTPError as exc:
+        if exc.code in {403, 405}:
+            fallback = urllib.request.Request(url, method="GET", headers=headers)
+            started_at = time.perf_counter()
+            try:
+                with opener.open(fallback, timeout=timeout_s) as response:
+                    elapsed = time.perf_counter() - started_at
+                    return {"url": url, "ok": True, "status": response.status, "elapsed_s": elapsed}
+            except Exception as fallback_exc:
+                return {"url": url, "ok": False, "status": exc.code, "error": str(fallback_exc)}
+        return {"url": url, "ok": False, "status": exc.code, "error": str(exc)}
+    except Exception as exc:
+        return {"url": url, "ok": False, "error": str(exc)}
+
+
+def check_hf_mirror_connectivity(hf_endpoint: str, tokenizer_name: str, tasks: Sequence[str]) -> Dict[str, object]:
+    endpoint = hf_endpoint.rstrip("/")
+    checks = [
+        probe_url(endpoint),
+        probe_url(f"{endpoint}/{tokenizer_name}/resolve/main/tokenizer_config.json"),
+        probe_url(f"{endpoint}/{tokenizer_name}/resolve/main/vocab.txt"),
+    ]
+    for task_name in tasks:
+        checks.append(probe_url(f"{endpoint}/datasets/nyu-mll/glue/resolve/main/README.md"))
+        checks.append(probe_url(f"{endpoint}/datasets/nyu-mll/glue"))
+        break
+    return {
+        "hf_endpoint": endpoint,
+        "tokenizer_name": tokenizer_name,
+        "checks": checks,
+        "all_ok": all(bool(item.get("ok")) for item in checks),
+    }
 
 
 def prepare_glue_task(
@@ -920,10 +968,18 @@ def main() -> None:
 
     output_dir = Path(args.output_dir)
     ensure_dirs(output_dir)
-    configure_hf_environment(Path(args.cache_dir))
+    configure_hf_environment(Path(args.cache_dir), args.hf_endpoint)
     device = resolve_device(args.device)
     environment = build_environment_record(args, device)
     save_json(output_dir / "artifacts" / "environment.json", environment)
+
+    if args.check_only:
+        connectivity = check_hf_mirror_connectivity(args.hf_endpoint, args.tokenizer_name, args.tasks)
+        save_json(output_dir / "artifacts" / "connectivity_check.json", connectivity)
+        print(json.dumps(connectivity, indent=2, ensure_ascii=False))
+        if not connectivity["all_ok"]:
+            raise SystemExit(2)
+        return
 
     tokenization_rows: List[Dict[str, object]] = []
     per_run_rows: List[Dict[str, object]] = []

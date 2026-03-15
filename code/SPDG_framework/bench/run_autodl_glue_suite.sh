@@ -9,7 +9,7 @@ CACHE_DIR="${CACHE_DIR:-$PROJECT_DIR/data/hf_cache}"
 export HF_HOME="${HF_HOME:-$CACHE_DIR}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
-export HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}"
@@ -21,6 +21,7 @@ echo "[AutoDL] Output:  $OUTPUT_DIR"
 echo "[AutoDL] Cache:   $HF_HOME"
 echo "[AutoDL] Device:  ${DEVICE:-cuda}"
 echo "[AutoDL] Tasks:   ${TASKS:-sst2 cola mrpc rte qnli}"
+echo "[AutoDL] HF API:  $HF_ENDPOINT"
 
 cd "$PROJECT_DIR"
 
@@ -33,6 +34,7 @@ python code/SPDG_framework/bench/run_autodl_glue_suite.py \
   --ablation-task "${ABLATION_TASK:-sst2}" \
   --device "${DEVICE:-cuda}" \
   --tokenizer-name "${TOKENIZER_NAME:-bert-base-uncased}" \
+  --hf-endpoint "$HF_ENDPOINT" \
   --output-dir "$OUTPUT_DIR" \
   --cache-dir "$CACHE_DIR" \
   --epochs "${EPOCHS:-3}" \
@@ -53,5 +55,6 @@ python code/SPDG_framework/bench/run_autodl_glue_suite.py \
   --dropout "${DROPOUT:-0.1}" \
   --run-ablation \
   --run-scaling \
+  ${CHECK_ONLY:+--check-only} \
   ${FP16:+--fp16} \
   ${SAVE_CHECKPOINTS:+--save-checkpoints}
