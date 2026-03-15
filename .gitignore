@@ -35,8 +35,15 @@ __pycache__/
 article.txt
 debug_error.log
 outputs.txt
+downloads/
+.pytest_cache/
+tmp/
+temp/
 
 # System
 thumbs.db
 Desktop.ini
 .DS_Store
+.env
+*.key
+*.pem
