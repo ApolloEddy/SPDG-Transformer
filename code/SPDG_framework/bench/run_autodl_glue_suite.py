@@ -97,6 +97,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-endpoint", default=os.environ.get("HF_ENDPOINT", "https://hf-mirror.com"))
     parser.add_argument("--output-dir", default=str(ROOT / "results" / "autodl_glue_suite"))
     parser.add_argument("--cache-dir", default=str(ROOT / "data" / "hf_cache"))
+    parser.add_argument("--download-timeout", type=int, default=120)
+    parser.add_argument("--download-retries", type=int, default=6)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--eval-batch-size", type=int, default=32)
@@ -150,7 +152,7 @@ def ensure_dirs(output_dir: Path) -> Dict[str, Path]:
     return paths
 
 
-def configure_hf_environment(cache_dir: Path, hf_endpoint: str) -> None:
+def configure_hf_environment(cache_dir: Path, hf_endpoint: str, download_timeout: int) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("HF_HOME", str(cache_dir))
     os.environ.setdefault("HF_DATASETS_CACHE", str(cache_dir / "datasets"))
@@ -158,6 +160,8 @@ def configure_hf_environment(cache_dir: Path, hf_endpoint: str) -> None:
     os.environ["HF_ENDPOINT"] = hf_endpoint.rstrip("/")
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ["HF_HUB_ETAG_TIMEOUT"] = str(download_timeout)
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = str(download_timeout)
 
 
 def seed_everything(seed: int) -> None:
@@ -220,10 +224,10 @@ def compute_task_metrics(task_name: str, preds: Sequence[int], labels: Sequence[
 
 
 def load_dependencies():
-    from datasets import load_dataset
+    from datasets import DownloadConfig, load_dataset
     from transformers import AutoTokenizer
 
-    return load_dataset, AutoTokenizer
+    return load_dataset, AutoTokenizer, DownloadConfig
 
 
 def save_json(path: Path, payload: object) -> None:
@@ -290,22 +294,34 @@ def prepare_glue_task(
     cache_dir: Path,
     train_limit: int,
     eval_limit: int,
+    download_timeout: int,
+    download_retries: int,
 ) -> Tuple[Dict[str, object], DatasetTiming, DatasetTiming]:
     if task_name not in GLUE_TASKS:
         raise ValueError(f"Unsupported GLUE task: {task_name}")
 
-    load_dataset, AutoTokenizer = load_dependencies()
+    load_dataset, AutoTokenizer, DownloadConfig = load_dependencies()
     task_cfg = GLUE_TASKS[task_name]
+    download_config = DownloadConfig(max_retries=download_retries)
+
+    print(f"[Task:{task_name}] 下载数据集元数据与分片...")
 
     dataset_start = time.perf_counter()
-    dataset = load_dataset("glue", task_name, cache_dir=str(cache_dir / "datasets"))
+    dataset = load_dataset(
+        "glue",
+        task_name,
+        cache_dir=str(cache_dir / "datasets"),
+        download_config=download_config,
+    )
     dataset_download_s = time.perf_counter() - dataset_start
 
+    print(f"[Task:{task_name}] 加载 tokenizer: {tokenizer_name}")
     tokenizer_start = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name,
         cache_dir=str(cache_dir / "transformers"),
         use_fast=True,
+        timeout=download_timeout,
     )
     tokenizer_load_s = time.perf_counter() - tokenizer_start
 
@@ -339,10 +355,12 @@ def prepare_glue_task(
     if eval_limit:
         eval_dataset = eval_dataset.select(range(min(eval_limit, len(eval_dataset))))
 
+    print(f"[Task:{task_name}] Tokenizing train split ({len(train_dataset)} samples)...")
     train_start = time.perf_counter()
     train_tokenized = train_dataset.map(encode_batch, batched=True, remove_columns=train_dataset.column_names)
     train_tokenization_s = time.perf_counter() - train_start
 
+    print(f"[Task:{task_name}] Tokenizing validation split ({len(eval_dataset)} samples)...")
     eval_start = time.perf_counter()
     eval_tokenized = eval_dataset.map(encode_batch, batched=True, remove_columns=eval_dataset.column_names)
     eval_tokenization_s = time.perf_counter() - eval_start
@@ -387,12 +405,18 @@ def prepare_glue_task(
 
 
 def build_dataloader(dataset, batch_size: int, shuffle: bool, num_workers: int, device: torch.device) -> DataLoader:
+    loader_kwargs = {
+        "dataset": dataset,
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": (device.type == "cuda"),
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
     return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=(device.type == "cuda"),
+        **loader_kwargs,
     )
 
 
@@ -483,7 +507,10 @@ def evaluate_model(
     dataloader: DataLoader,
     task_name: str,
     device: torch.device,
+    run_label: str,
 ) -> Dict[str, float]:
+    from tqdm.auto import tqdm
+
     model.eval()
     criterion = nn.CrossEntropyLoss()
     total_loss = 0.0
@@ -495,7 +522,8 @@ def evaluate_model(
 
     reset_peak_memory(device)
     with torch.no_grad():
-        for batch in dataloader:
+        progress = tqdm(dataloader, desc=f"{run_label} eval", leave=False)
+        for batch in progress:
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
@@ -515,6 +543,7 @@ def evaluate_model(
             latencies.append(end - start)
             preds_all.extend(preds.cpu().tolist())
             labels_all.extend(labels.cpu().tolist())
+            progress.set_postfix(loss=f"{(total_loss / max(total_examples, 1)):.4f}")
 
     metrics = compute_task_metrics(task_name, preds_all, labels_all)
     metrics.update(
@@ -541,10 +570,13 @@ def train_single_run(
     gradient_accumulation: int,
     fp16: bool,
     checkpoint_path: Optional[Path],
+    run_label: str,
 ) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    from tqdm.auto import tqdm
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
-    scaler = torch.cuda.amp.GradScaler(enabled=(fp16 and device.type == "cuda"))
+    scaler = torch.amp.GradScaler("cuda", enabled=(fp16 and device.type == "cuda"))
     model.to(device)
 
     history: List[Dict[str, object]] = []
@@ -561,12 +593,14 @@ def train_single_run(
         total_tokens = 0
         optimizer.zero_grad(set_to_none=True)
 
-        for step, batch in enumerate(train_loader, start=1):
+        print(f"[Run] {run_label} | epoch {epoch}/{epochs}")
+        progress = tqdm(train_loader, desc=f"{run_label} train", leave=False)
+        for step, batch in enumerate(progress, start=1):
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
 
-            with torch.cuda.amp.autocast(enabled=(fp16 and device.type == "cuda")):
+            with torch.amp.autocast("cuda", enabled=(fp16 and device.type == "cuda")):
                 logits, _, _ = model(input_ids, attention_mask)
                 loss = criterion(logits, labels) / gradient_accumulation
 
@@ -585,6 +619,10 @@ def train_single_run(
             train_examples += labels.size(0)
             train_correct += (preds == labels).sum().item()
             total_tokens += int(attention_mask.sum().item())
+            progress.set_postfix(
+                loss=f"{(train_loss_sum / max(train_examples, 1)):.4f}",
+                acc=f"{(train_correct / max(train_examples, 1)):.4f}",
+            )
 
         if train_loader and (len(train_loader) % gradient_accumulation) != 0:
             scaler.unscale_(optimizer)
@@ -595,7 +633,7 @@ def train_single_run(
 
         epoch_time_s = time.perf_counter() - epoch_start
         train_peak_memory_mb = get_peak_memory_mb(device)
-        eval_metrics = evaluate_model(model, eval_loader, task_name, device)
+        eval_metrics = evaluate_model(model, eval_loader, task_name, device, run_label)
 
         record = {
             "epoch": epoch,
@@ -615,6 +653,12 @@ def train_single_run(
             "eval_peak_memory_mb": eval_metrics["peak_memory_mb"],
         }
         history.append(record)
+        print(
+            f"[Done] {run_label} | epoch {epoch} | "
+            f"train_acc={record['train_accuracy']:.4f} | "
+            f"eval_acc={record['eval_accuracy']:.4f} | "
+            f"eval_tok/s={record['eval_tokens_per_second']:.2f}"
+        )
 
         if best_epoch_record is None or record[f"eval_{primary_metric_name}"] > best_epoch_record[f"eval_{primary_metric_name}"]:
             best_epoch_record = dict(record)
@@ -968,7 +1012,7 @@ def main() -> None:
 
     output_dir = Path(args.output_dir)
     ensure_dirs(output_dir)
-    configure_hf_environment(Path(args.cache_dir), args.hf_endpoint)
+    configure_hf_environment(Path(args.cache_dir), args.hf_endpoint, args.download_timeout)
     device = resolve_device(args.device)
     environment = build_environment_record(args, device)
     save_json(output_dir / "artifacts" / "environment.json", environment)
@@ -988,12 +1032,15 @@ def main() -> None:
 
     total_start = time.perf_counter()
     for task_name in args.tasks:
+        print(f"\n=== Preparing task: {task_name} ===")
         task_bundle, train_timing, eval_timing = prepare_glue_task(
             task_name=task_name,
             tokenizer_name=args.tokenizer_name,
             cache_dir=Path(args.cache_dir),
             train_limit=args.train_limit,
             eval_limit=args.eval_limit,
+            download_timeout=args.download_timeout,
+            download_retries=args.download_retries,
         )
         tokenization_rows.extend([asdict(train_timing), asdict(eval_timing)])
 
@@ -1003,6 +1050,7 @@ def main() -> None:
         for seed in args.seeds:
             seed_everything(seed)
             for model_name in ("full", "fixed", "spdg"):
+                run_label = f"{task_name}/{model_name}/seed{seed}"
                 checkpoint_path = None
                 if args.save_checkpoints:
                     checkpoint_path = output_dir / "checkpoints" / f"{task_name}_{model_name}_seed{seed}.pt"
@@ -1030,6 +1078,7 @@ def main() -> None:
                     gradient_accumulation=args.gradient_accumulation,
                     fp16=args.fp16,
                     checkpoint_path=checkpoint_path,
+                    run_label=run_label,
                 )
                 for row in history:
                     row.update({"task": task_name, "model": model_name, "seed": seed})
@@ -1054,18 +1103,22 @@ def main() -> None:
 
     if args.run_ablation:
         ablation_task = args.ablation_task
+        print(f"\n=== Running ablation on task: {ablation_task} ===")
         task_bundle, _, _ = prepare_glue_task(
             task_name=ablation_task,
             tokenizer_name=args.tokenizer_name,
             cache_dir=Path(args.cache_dir),
             train_limit=args.train_limit,
             eval_limit=args.eval_limit,
+            download_timeout=args.download_timeout,
+            download_retries=args.download_retries,
         )
         train_loader = build_dataloader(task_bundle["train_dataset"], args.batch_size, True, args.num_workers, device)
         eval_loader = build_dataloader(task_bundle["eval_dataset"], args.eval_batch_size, False, args.num_workers, device)
         for seed in args.seeds:
             seed_everything(seed)
             for model_name in ("full", "fixed", "spdg", "random_prior", "uncalibrated"):
+                run_label = f"{ablation_task}/{model_name}/seed{seed}"
                 model = build_model(
                     model_name=model_name,
                     vocab_size=30522,
@@ -1090,6 +1143,7 @@ def main() -> None:
                     gradient_accumulation=args.gradient_accumulation,
                     fp16=args.fp16,
                     checkpoint_path=None,
+                    run_label=run_label,
                 )
                 ablation_rows.append(
                     {

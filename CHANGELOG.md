@@ -49,3 +49,13 @@
 
 ### Notes
 - 已在本地执行 `--check-only` 对 `https://hf-mirror.com` 做零下载探测，`bert-base-uncased` 的 `tokenizer_config.json`、`vocab.txt` 以及 `GLUE` 数据集页面/README 均返回 `200`，可作为 AutoDL 端的默认镜像配置。
+
+### Changed
+- 为 AutoDL GLUE 主脚本新增任务准备日志、train/eval 进度条与每个 epoch 的完成摘要，避免长时间无输出时误判程序卡死。
+- 为下载链路新增 `--download-timeout` 与 `--download-retries`，并同步到 `HF_HUB_ETAG_TIMEOUT` / `HF_HUB_DOWNLOAD_TIMEOUT`，降低镜像站偶发握手超时导致的中断概率。
+- 将训练中的 AMP 调用更新为 `torch.amp` 接口，消除旧版 `torch.cuda.amp` 的弃用警告。
+- 优化 DataLoader，开启 `persistent_workers` 与 `prefetch_factor`，减少数据等待时间并提升 GPU 喂数稳定性。
+- 在 AutoDL 启动脚本中修复 `CACHE_DIR=/path/to/cache` 占位值被误用的问题，未显式设置时将自动回退到项目内缓存目录。
+
+### Notes
+- 这些改动主要解决“训练看起来像卡死”“GPU 利用率偏低时难以判断瓶颈”“镜像下载偶发超时直接崩溃”三个运行体验问题，不改变 SPDG / Full / Fixed 的实验定义本身。

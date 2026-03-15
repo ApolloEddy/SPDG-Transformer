@@ -6,11 +6,17 @@ PROJECT_DIR="${PROJECT_DIR:-$ROOT_DIR}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/results/autodl_glue_suite}"
 CACHE_DIR="${CACHE_DIR:-$PROJECT_DIR/data/hf_cache}"
 
+if [[ "$CACHE_DIR" == "/path/to/cache" ]]; then
+  CACHE_DIR="$PROJECT_DIR/data/hf_cache"
+fi
+
 export HF_HOME="${HF_HOME:-$CACHE_DIR}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
+export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}"
+export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}"
 
@@ -37,6 +43,8 @@ python code/SPDG_framework/bench/run_autodl_glue_suite.py \
   --hf-endpoint "$HF_ENDPOINT" \
   --output-dir "$OUTPUT_DIR" \
   --cache-dir "$CACHE_DIR" \
+  --download-timeout "${DOWNLOAD_TIMEOUT:-120}" \
+  --download-retries "${DOWNLOAD_RETRIES:-6}" \
   --epochs "${EPOCHS:-3}" \
   --batch-size "${BATCH_SIZE:-16}" \
   --eval-batch-size "${EVAL_BATCH_SIZE:-32}" \

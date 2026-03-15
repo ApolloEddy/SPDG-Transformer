@@ -125,6 +125,8 @@ bash code/SPDG_framework/bench/run_autodl_glue_suite.sh
 
 - `--tasks`: 指定 GLUE 子任务
 - `--ablation-task`: 消融实验在哪个任务上跑，默认 `sst2`
+- `--download-timeout`: Hugging Face 文件下载超时秒数
+- `--download-retries`: Hugging Face 文件下载重试次数
 - `--epochs`: 训练轮数
 - `--batch-size`: 训练 batch size
 - `--eval-batch-size`: 评估 batch size
@@ -135,6 +137,13 @@ bash code/SPDG_framework/bench/run_autodl_glue_suite.sh
 - `--fp16`: CUDA 半精度
 - `--run-ablation`: 跑消融
 - `--run-scaling`: 跑长序列 scaling probe
+
+当前脚本会在这些阶段打印进度或阶段日志：
+
+- 数据集分片下载
+- train / validation tokenization
+- 每个任务 / 模型 / seed / epoch 的训练开始与结束
+- 训练与评估进度条
 
 ## 7. 输出文件说明
 
@@ -218,3 +227,35 @@ bash code/SPDG_framework/bench/run_autodl_glue_suite.sh
 - 在 GLUE 上未必能追上预训练 BERT 的绝对分数
 - 更适合强调“相同架构预算下的效率-效果折中”
 - 如果你想写成强论文，后续最好再补一轮更长序列或更大规模任务
+
+## 12. 常见问题
+
+### GPU 利用率偏低
+
+如果你使用的是 `4090 / 24GB` 之类的大卡，而当前配置只有：
+
+- `D_MODEL=256`
+- `N_LAYERS=2`
+- `BATCH_SIZE=16`
+
+那么 GPU 利用率只有 `10%~30%` 是正常的。原因通常是：
+
+- 模型太轻
+- 文本长度太短
+- Python / DataLoader / tokenization 开销占比高
+
+### 长时间没输出像卡死
+
+新版脚本已经补充：
+
+- 任务准备日志
+- tokenization 提示
+- train/eval 进度条
+- 每个 epoch 的完成摘要
+
+如果仍然停在“下载数据集元数据与分片...”，通常是镜像下载过慢，可调大：
+
+```bash
+DOWNLOAD_TIMEOUT=240
+DOWNLOAD_RETRIES=12
+```
